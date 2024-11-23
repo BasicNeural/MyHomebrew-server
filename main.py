@@ -1,4 +1,4 @@
-from flask import Flask, jsonify
+from flask import Flask, jsonify, render_template
 from flask_cors import CORS
 from datetime import datetime, timedelta
 import sqlite3
@@ -85,6 +85,11 @@ def get_brews(brew_id):
     first = rows[0][1] if rows else None
 
     return jsonify({"data": data, "first": first}), 200
+
+
+@app.route('/')
+def index():
+    return render_template('index.html')
 
 
 def periodic_task():
