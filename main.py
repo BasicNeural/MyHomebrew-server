@@ -1,10 +1,16 @@
-from flask import Flask, request, jsonify
+from flask import Flask, jsonify
+from flask_cors import CORS
 from datetime import datetime, timedelta
 import sqlite3
 import threading
 import time
 
-app = Flask(__name__)
+
+app = Flask(__name__,
+            static_url_path='',
+            static_folder='web/static',
+            template_folder='web/templates')
+CORS(app)
 
 conn = sqlite3.connect("brews.db", check_same_thread=False)
 
@@ -46,7 +52,6 @@ init_db()
 def add_brew(brew_id):
     timestamp = datetime.now().isoformat()
     cursor = conn.cursor()
-    cursor.execute("INSERT INTO brews (brew_id, timestamp) VALUES (?, ?)", (brew_id, timestamp))
     cursor.execute("SELECT timestamp FROM brews_hist_meta WHERE brew_id = ?", (brew_id,))
     if cursor.fetchone() is None:
         cursor.execute("INSERT INTO brews_hist_meta (brew_id, timestamp) VALUES (?, ?)", (brew_id, timestamp))
@@ -54,27 +59,32 @@ def add_brew(brew_id):
 
     return "", 201
 
+@app.route('/brew/<brew_id>/data', methods=['POST'])
+def add_brew_data(brew_id):
+    timestamp = datetime.now().isoformat()
+    cursor = conn.cursor()
+    cursor.execute("INSERT INTO brews (brew_id, timestamp) VALUES (?, ?)", (brew_id, timestamp))
+    conn.commit()
+
+    return "", 201
+
 
 @app.route('/brew/<brew_id>', methods=['GET'])
 def get_brews(brew_id):
-    start_at = request.args.get('startAt', '1970-01-01T00:00:00')
-    end_at = request.args.get('endAt', datetime.now().isoformat())
-    limit = int(request.args.get('limit', 100))
 
     cursor = conn.cursor()
     query = """
-        SELECT timestamp FROM brews 
-        WHERE brew_id = ? AND timestamp > ? AND timestamp <= ? 
-        ORDER BY timestamp ASC 
-        LIMIT ?
+        SELECT count, timestamp FROM brews_hist
+        WHERE brew_id = ?
+        ORDER BY timestamp ASC
     """
-    cursor.execute(query, (brew_id, start_at, end_at, limit))
+    cursor.execute(query, (brew_id,))
     rows = cursor.fetchall()
 
-    timestamps = [row[0] for row in rows]
-    last_timestamp = timestamps[-1] if timestamps else None
+    data = [row[0] for row in rows]
+    first = rows[0][1] if rows else None
 
-    return jsonify({"data": timestamps, "last": last_timestamp}), 200
+    return jsonify({"data": data, "first": first}), 200
 
 
 def periodic_task():
@@ -85,31 +95,33 @@ def periodic_task():
             cursor = conn.cursor()
             cursor.execute("SELECT brew_id, timestamp FROM brews_hist_meta")
             rows = cursor.fetchall()
+            now = datetime.now()
 
             for row in rows:
                 brew_id, last_timestamp = row
                 start_time = datetime.fromisoformat(last_timestamp)
                 end_time = start_time + timedelta(minutes=10)
+                while end_time <= now:
 
-                cursor.execute("""
-                    SELECT COUNT(*) FROM brews
-                    WHERE brew_id = ? AND timestamp > ? AND timestamp <= ?
-                """, (brew_id, start_time.isoformat(), end_time.isoformat()))
+                    cursor.execute("""
+                        SELECT COUNT(*) FROM brews
+                        WHERE brew_id = ? AND timestamp > ? AND timestamp <= ?
+                    """, (brew_id, start_time.isoformat(), end_time.isoformat()))
 
-                count = cursor.fetchone()[0]
+                    count = cursor.fetchone()[0]
 
-                cursor.execute("INSERT INTO brews_hist (brew_id, count, timestamp) VALUES (?, ?, ?)",
-                               (brew_id, count, end_time.isoformat()))
+                    cursor.execute("INSERT INTO brews_hist (brew_id, count, timestamp) VALUES (?, ?, ?)",
+                                   (brew_id, count, end_time.isoformat()))
 
-                cursor.execute("UPDATE brews_hist_meta SET timestamp = ? WHERE brew_id = ?",
-                               (end_time.isoformat(), brew_id))
+                    cursor.execute("UPDATE brews_hist_meta SET timestamp = ? WHERE brew_id = ?",
+                                   (end_time.isoformat(), brew_id))
 
-                print(f'count from {brew_id}: {count}')
+                    print(f'count from {brew_id} until {end_time}: {count}')
+                    end_time = end_time + timedelta(minutes=10)
 
             conn.commit()
 
 
-# 주기적인 작업을 별도의 스레드로 실행
 thread = threading.Thread(target=periodic_task, daemon=True)
 thread.start()
 
